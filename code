@@ -1,0 +1,755 @@
+# ============================================================
+# 📚 PDF STUDY BUDDY AI - GOOGLE COLAB
+# GRADIO VERSION - ONE CELL
+# ============================================================
+
+!pip -q install gradio groq pypdf sentence-transformers faiss-cpu
+
+import os
+import re
+import numpy as np
+import faiss
+import gradio as gr
+
+from groq import Groq
+from pypdf import PdfReader
+from sentence_transformers import SentenceTransformer
+
+
+# ============================================================
+# 🔑 GROQ API KEY
+# ============================================================
+
+GROQ_API_KEY = "GROQ_API_KEY = "gsk_...""
+
+client = Groq(
+    api_key=GROQ_API_KEY
+)
+
+MODEL = "llama-3.3-70b-versatile"
+
+
+# ============================================================
+# EMBEDDING MODEL
+# ============================================================
+
+print("⏳ Loading AI embedding model...")
+
+embedding_model = SentenceTransformer(
+    "all-MiniLM-L6-v2"
+)
+
+print("✅ Embedding model loaded!")
+
+
+# ============================================================
+# GLOBAL PDF DATA
+# ============================================================
+
+pdf_text = ""
+chunks = []
+vector_index = None
+
+
+# ============================================================
+# READ PDF
+# ============================================================
+
+def read_pdf(file):
+
+    global pdf_text
+    global chunks
+    global vector_index
+
+    if file is None:
+        return "❌ Please upload a PDF first."
+
+    try:
+
+        reader = PdfReader(file)
+
+        text = ""
+
+        for page in reader.pages:
+
+            page_text = page.extract_text()
+
+            if page_text:
+                text += page_text + "\n"
+
+        if not text.strip():
+
+            return (
+                "❌ Could not extract text from this PDF. "
+                "Try a text-based PDF."
+            )
+
+        pdf_text = text
+
+        # Create chunks
+        chunks = []
+
+        chunk_size = 1000
+        overlap = 200
+
+        start = 0
+
+        while start < len(text):
+
+            end = start + chunk_size
+
+            chunk = text[start:end].strip()
+
+            if chunk:
+                chunks.append(chunk)
+
+            start += chunk_size - overlap
+
+        # Create embeddings
+        embeddings = embedding_model.encode(
+            chunks,
+            convert_to_numpy=True
+        )
+
+        embeddings = embeddings.astype(
+            "float32"
+        )
+
+        dimension = embeddings.shape[1]
+
+        vector_index = faiss.IndexFlatL2(
+            dimension
+        )
+
+        vector_index.add(
+            embeddings
+        )
+
+        return (
+            "✅ PDF processed successfully!\n\n"
+            f"📄 Pages: {len(reader.pages)}\n"
+            f"📝 Characters: {len(text):,}\n"
+            f"🧩 Text chunks: {len(chunks)}\n\n"
+            "You can now ask questions."
+        )
+
+    except Exception as e:
+
+        return f"❌ Error reading PDF:\n{str(e)}"
+
+
+# ============================================================
+# SEARCH PDF
+# ============================================================
+
+def search_pdf(question):
+
+    if vector_index is None:
+
+        return []
+
+    question_embedding = embedding_model.encode(
+        [question],
+        convert_to_numpy=True
+    )
+
+    question_embedding = question_embedding.astype(
+        "float32"
+    )
+
+    top_k = min(
+        5,
+        len(chunks)
+    )
+
+    distances, indices = vector_index.search(
+        question_embedding,
+        top_k
+    )
+
+    results = []
+
+    for index in indices[0]:
+
+        if 0 <= index < len(chunks):
+
+            results.append(
+                chunks[index]
+            )
+
+    return results
+
+
+# ============================================================
+# CHAT WITH PDF
+# ============================================================
+
+def chat_with_pdf(question):
+
+    if not pdf_text:
+
+        return (
+            "❌ Please upload and process a PDF first."
+        )
+
+    if not question.strip():
+
+        return (
+            "❌ Please enter a question."
+        )
+
+    try:
+
+        relevant_chunks = search_pdf(
+            question
+        )
+
+        context = "\n\n---\n\n".join(
+            relevant_chunks
+        )
+
+        prompt = f"""
+You are a PDF Study Buddy AI.
+
+Answer the student's question using the
+provided PDF context.
+
+IMPORTANT RULES:
+
+1. Answer based mainly on the PDF.
+2. Do not invent facts.
+3. If the PDF does not contain the answer,
+   say that clearly.
+4. Explain concepts in simple language.
+5. Give examples when helpful.
+6. For exam questions, provide structured answers.
+
+PDF CONTEXT:
+
+{context}
+
+STUDENT QUESTION:
+
+{question}
+"""
+
+        response = client.chat.completions.create(
+
+            model=MODEL,
+
+            messages=[
+
+                {
+                    "role": "system",
+                    "content":
+                    "You are a helpful AI study assistant."
+                },
+
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+
+            temperature=0.3
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+
+        return f"❌ AI Error:\n{str(e)}"
+
+
+# ============================================================
+# SUMMARY
+# ============================================================
+
+def create_summary():
+
+    if not pdf_text:
+
+        return (
+            "❌ Please upload and process a PDF first."
+        )
+
+    try:
+
+        text = pdf_text[:15000]
+
+        prompt = f"""
+Create detailed but easy-to-understand study notes
+from this PDF.
+
+Include:
+
+📌 Main Topics
+
+📌 Important Concepts
+
+📌 Key Definitions
+
+📌 Important Points
+
+📌 Examples
+
+📌 Exam-Focused Notes
+
+📌 Quick Revision
+
+Use headings and bullet points.
+
+PDF:
+
+{text}
+"""
+
+        response = client.chat.completions.create(
+
+            model=MODEL,
+
+            messages=[
+
+                {
+                    "role": "system",
+                    "content":
+                    "You are an expert study-notes generator."
+                },
+
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+
+            temperature=0.3
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+
+        return f"❌ Error:\n{str(e)}"
+
+
+# ============================================================
+# MCQ GENERATOR
+# ============================================================
+
+def create_mcqs():
+
+    if not pdf_text:
+
+        return (
+            "❌ Please upload and process a PDF first."
+        )
+
+    try:
+
+        text = pdf_text[:12000]
+
+        prompt = f"""
+Create 10 multiple-choice questions from
+the following study material.
+
+For every question provide:
+
+Question
+
+A) option
+
+B) option
+
+C) option
+
+D) option
+
+Correct Answer
+
+Explanation
+
+Make the questions useful for college
+exam preparation.
+
+STUDY MATERIAL:
+
+{text}
+"""
+
+        response = client.chat.completions.create(
+
+            model=MODEL,
+
+            messages=[
+
+                {
+                    "role": "system",
+                    "content":
+                    "You are an expert exam question generator."
+                },
+
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+
+            temperature=0.4
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+
+        return f"❌ Error:\n{str(e)}"
+
+
+# ============================================================
+# FLASHCARDS
+# ============================================================
+
+def create_flashcards():
+
+    if not pdf_text:
+
+        return (
+            "❌ Please upload and process a PDF first."
+        )
+
+    try:
+
+        text = pdf_text[:12000]
+
+        prompt = f"""
+Create 15 useful study flashcards
+from this PDF.
+
+Use this format:
+
+CARD 1
+
+Question:
+...
+
+Answer:
+...
+
+
+CARD 2
+
+Question:
+...
+
+Answer:
+...
+
+Keep answers short and easy to remember.
+
+STUDY MATERIAL:
+
+{text}
+"""
+
+        response = client.chat.completions.create(
+
+            model=MODEL,
+
+            messages=[
+
+                {
+                    "role": "system",
+                    "content":
+                    "You create effective study flashcards."
+                },
+
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+
+            temperature=0.4
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+
+        return f"❌ Error:\n{str(e)}"
+
+
+# ============================================================
+# EXAM ANSWER
+# ============================================================
+
+def exam_answer(question):
+
+    if not pdf_text:
+
+        return (
+            "❌ Please upload and process a PDF first."
+        )
+
+    if not question.strip():
+
+        return (
+            "❌ Enter an exam question."
+        )
+
+    try:
+
+        relevant = search_pdf(
+            question
+        )
+
+        context = "\n\n".join(
+            relevant
+        )
+
+        prompt = f"""
+You are an expert college exam assistant.
+
+Answer the question using the PDF.
+
+Write the answer in an exam-friendly format.
+
+Include:
+
+1. Definition / Introduction
+2. Main explanation
+3. Important points
+4. Example if applicable
+5. Conclusion
+
+Use simple language.
+
+QUESTION:
+
+{question}
+
+PDF CONTEXT:
+
+{context}
+"""
+
+        response = client.chat.completions.create(
+
+            model=MODEL,
+
+            messages=[
+
+                {
+                    "role": "system",
+                    "content":
+                    "You write clear college exam answers."
+                },
+
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+
+            temperature=0.3
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+
+        return f"❌ Error:\n{str(e)}"
+
+
+# ============================================================
+# GRADIO UI
+# ============================================================
+
+with gr.Blocks(
+    title="PDF Study Buddy AI"
+) as app:
+
+    gr.Markdown(
+        """
+        # 📚 PDF Study Buddy AI
+
+        ### Your AI-powered PDF learning assistant
+
+        Upload your study PDF and use AI to:
+
+        💬 Chat with your PDF  
+        📝 Generate summaries  
+        ❓ Generate MCQs  
+        🧠 Create flashcards  
+        🎓 Generate exam answers
+        """
+    )
+
+    # --------------------------------------------------------
+    # PDF UPLOAD
+    # --------------------------------------------------------
+
+    with gr.Row():
+
+        pdf_upload = gr.File(
+            label="📄 Upload PDF",
+            file_types=[".pdf"],
+            type="filepath"
+        )
+
+        process_button = gr.Button(
+            "🚀 Process PDF",
+            variant="primary"
+        )
+
+    status = gr.Textbox(
+        label="📊 PDF Status",
+        lines=5
+    )
+
+    process_button.click(
+        read_pdf,
+        inputs=pdf_upload,
+        outputs=status
+    )
+
+    # --------------------------------------------------------
+    # TABS
+    # --------------------------------------------------------
+
+    with gr.Tabs():
+
+        # ====================================================
+        # CHAT
+        # ====================================================
+
+        with gr.Tab("💬 Chat with PDF"):
+
+            gr.Markdown(
+                "Ask any question about your uploaded PDF."
+            )
+
+            chat_question = gr.Textbox(
+                label="Your Question",
+                placeholder=
+                "Example: Explain machine learning in simple terms.",
+                lines=3
+            )
+
+            chat_button = gr.Button(
+                "🤖 Ask AI",
+                variant="primary"
+            )
+
+            chat_answer = gr.Markdown(
+                label="AI Answer"
+            )
+
+            chat_button.click(
+                chat_with_pdf,
+                inputs=chat_question,
+                outputs=chat_answer
+            )
+
+        # ====================================================
+        # SUMMARY
+        # ====================================================
+
+        with gr.Tab("📝 Summary"):
+
+            summary_button = gr.Button(
+                "📚 Generate Summary",
+                variant="primary"
+            )
+
+            summary_output = gr.Markdown()
+
+            summary_button.click(
+                create_summary,
+                outputs=summary_output
+            )
+
+        # ====================================================
+        # MCQS
+        # ====================================================
+
+        with gr.Tab("❓ MCQs"):
+
+            mcq_button = gr.Button(
+                "🎯 Generate 10 MCQs",
+                variant="primary"
+            )
+
+            mcq_output = gr.Markdown()
+
+            mcq_button.click(
+                create_mcqs,
+                outputs=mcq_output
+            )
+
+        # ====================================================
+        # FLASHCARDS
+        # ====================================================
+
+        with gr.Tab("🧠 Flashcards"):
+
+            flashcard_button = gr.Button(
+                "✨ Generate Flashcards",
+                variant="primary"
+            )
+
+            flashcard_output = gr.Markdown()
+
+            flashcard_button.click(
+                create_flashcards,
+                outputs=flashcard_output
+            )
+
+        # ====================================================
+        # EXAM ANSWER
+        # ====================================================
+
+        with gr.Tab("🎓 Exam Answer"):
+
+            exam_question = gr.Textbox(
+                label="Exam Question",
+                placeholder=
+                "Example: Explain supervised learning.",
+                lines=4
+            )
+
+            exam_button = gr.Button(
+                "✍️ Generate Exam Answer",
+                variant="primary"
+            )
+
+            exam_output = gr.Markdown()
+
+            exam_button.click(
+                exam_answer,
+                inputs=exam_question,
+                outputs=exam_output
+            )
+
+    gr.Markdown(
+        """
+        ---
+        ### 📚 PDF Study Buddy AI
+        Powered by Groq + RAG + FAISS + Sentence Transformers
+        """
+    )
+
+
+# ============================================================
+# LAUNCH
+# ============================================================
+
+print()
+print("=" * 60)
+print("🚀 STARTING PDF STUDY BUDDY...")
+print("=" * 60)
+print()
+
+app.launch(
+    share=True,
+    debug=True
+)
